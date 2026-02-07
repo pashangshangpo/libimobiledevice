@@ -1,89 +1,17 @@
-name: build
+name: build-static
 
 on:
-  push:
-  pull_request:
-  schedule:
-    - cron: '0 0 1 * *'
+  workflow_dispatch:
 
 jobs:
-  build-linux-ubuntu:
-    runs-on: ubuntu-latest
-    steps:
-    - name: install dependencies
-      run: |
-          sudo apt-get update
-          pip install cython
-    - name: prepare environment
-      run: |
-          echo "target_triplet=`gcc -dumpmachine`" >> $GITHUB_ENV
-    - name: fetch libplist
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libplist-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libplist
-    - name: fetch libusbmuxd
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libusbmuxd-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libusbmuxd
-    - name: fetch libimobiledevice-glue
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libimobiledevice-glue-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libimobiledevice-glue
-    - name: fetch libtatsu
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libtatsu-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libtatsu
-    - name: install external dependencies
-      run: |
-          mkdir extract
-          for I in *.tar; do
-            tar -C extract -xvf $I
-          done
-          sudo cp -r extract/* /
-          sudo ldconfig
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: autogen
-      run: ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig LDFLAGS="-Wl,-rpath=/usr/local/lib" --enable-debug
-    - name: make
-      run: make
-    - name: make install
-      run: sudo make install
-    - name: prepare artifact
-      run: |
-          mkdir -p dest
-          DESTDIR=`pwd`/dest make install
-          tar -C dest -cf libimobiledevice.tar usr
-    - name: publish artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: libimobiledevice-latest_${{env.target_triplet}}
-        path: libimobiledevice.tar
   build-macOS:
     runs-on: macOS-latest
     steps:
     - name: install dependencies
       run: |
-          if test -x "`which port`"; then
-            sudo port install libtool autoconf automake pkgconfig
-          else
-            brew install libtool autoconf automake pkgconfig
-          fi
-          pip3 install --break-system-packages cython
+          brew install libtool autoconf automake pkgconfig
       shell: bash
+
     - name: fetch libplist
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -91,6 +19,7 @@ jobs:
         workflow: build.yml
         name: libplist-latest_macOS
         repo: libimobiledevice/libplist
+
     - name: fetch libusbmuxd
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -98,6 +27,7 @@ jobs:
         workflow: build.yml
         name: libusbmuxd-latest_macOS
         repo: libimobiledevice/libusbmuxd
+
     - name: fetch libimobiledevice-glue
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -105,6 +35,7 @@ jobs:
         workflow: build.yml
         name: libimobiledevice-glue-latest_macOS
         repo: libimobiledevice/libimobiledevice-glue
+
     - name: fetch libtatsu
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -112,6 +43,7 @@ jobs:
         workflow: build.yml
         name: libtatsu-latest_macOS
         repo: libimobiledevice/libtatsu
+
     - name: install external dependencies
       run: |
           mkdir extract
@@ -119,7 +51,7 @@ jobs:
             tar -C extract -xvf $I
           done
           sudo cp -r extract/* /
-    - uses: actions/checkout@v4
+
     - name: install additional requirements
       run: |
           mkdir -p lib
@@ -136,6 +68,9 @@ jobs:
           mkdir -p deps
           tar -C deps -xzf $FILENAME
           echo "DEPSDIR=`pwd`/deps" >> $GITHUB_ENV
+
+    - uses: actions/checkout@v4
+
     - name: autogen
       run: |
           SDKDIR=`xcrun --sdk macosx --show-sdk-path`
@@ -148,34 +83,88 @@ jobs:
           done
           export CFLAGS="$USEARCHS -isysroot $SDKDIR"
           echo "Using CFLAGS: $CFLAGS"
-          PYTHON3_BIN=`xcrun -f python3`
-          if test -x $PYTHON3_BIN; then
-            export PYTHON=$PYTHON3_BIN
-            PYTHON_VER=`$PYTHON3_BIN -c "import distutils.sysconfig; print(distutils.sysconfig.get_config_var('VERSION'))"`
-            PYTHON_EXEC_PREFIX=`$PYTHON3_BIN -c "import distutils.sysconfig; print(distutils.sysconfig.get_config_var('exec_prefix'))"`
-            PYTHON_LIBS_PATH=$PYTHON_EXEC_PREFIX/lib
-            PYTHON_FRAMEWORK_PATH=$PYTHON_EXEC_PREFIX/Python3
-            export PYTHON_CPPFLAGS="-I$PYTHON_EXEC_PREFIX/Headers"
-            export PYTHON_LIBS="-L$PYTHON_LIBS_PATH -lpython$PYTHON_VER"
-            export PYTHON_EXTRA_LDFLAGS="-Wl,-stack_size,1000000  -framework CoreFoundation $PYTHON_FRAMEWORK_PATH"
-          fi
-          ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig --enable-debug \
+          ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+              --enable-static --disable-shared \
+              --without-cython \
+              --enable-debug \
               openssl_CFLAGS="-I${{ env.DEPSDIR }}/libressl-${{ env.LIBRESSL_VER }}/include" \
               openssl_LIBS="-Xlinker ${{ env.LIBSSL }} -Xlinker ${{ env.LIBCRYPTO }}"
+
     - name: make
       run: make
+
     - name: make install
       run: sudo make install
-    - name: prepare artifact
+
+    - name: collect binaries and fix linking
       run: |
-          mkdir -p dest
-          DESTDIR=`pwd`/dest make install
-          tar -C dest -cf libimobiledevice.tar usr
+          mkdir -p release/bin release/lib
+
+          # 收集可执行文件
+          cp /usr/local/bin/idevice* release/bin/ 2>/dev/null || true
+          cp /usr/local/bin/idevice_id release/bin/ 2>/dev/null || true
+
+          # 收集所有依赖的 dylib（来自依赖包，它们还是动态的）
+          for bin in release/bin/*; do
+            otool -L "$bin" 2>/dev/null | grep '/usr/local/lib' | awk '{print $1}' | while read dep; do
+              dep_name=$(basename "$dep")
+              if [ -f "$dep" ] && [ ! -f "release/lib/$dep_name" ]; then
+                cp "$dep" "release/lib/"
+              fi
+            done
+          done
+
+          # 递归收集 dylib 的依赖
+          for lib in release/lib/*.dylib; do
+            otool -L "$lib" 2>/dev/null | grep '/usr/local/lib' | awk '{print $1}' | while read dep; do
+              dep_name=$(basename "$dep")
+              if [ -f "$dep" ] && [ ! -f "release/lib/$dep_name" ]; then
+                cp "$dep" "release/lib/"
+              fi
+            done
+          done
+
+          # 修复 bin 中可执行文件的 dylib 路径
+          for bin in release/bin/*; do
+            otool -L "$bin" 2>/dev/null | grep '/usr/local/lib' | awk '{print $1}' | while read dep; do
+              dep_name=$(basename "$dep")
+              install_name_tool -change "$dep" "@executable_path/../lib/$dep_name" "$bin" 2>/dev/null || true
+            done
+          done
+
+          # 修复 lib 中 dylib 的相互引用
+          for lib in release/lib/*.dylib; do
+            lib_name=$(basename "$lib")
+            install_name_tool -id "@loader_path/$lib_name" "$lib" 2>/dev/null || true
+            otool -L "$lib" 2>/dev/null | grep '/usr/local/lib' | awk '{print $1}' | while read dep; do
+              dep_name=$(basename "$dep")
+              install_name_tool -change "$dep" "@loader_path/$dep_name" "$lib" 2>/dev/null || true
+            done
+          done
+
+          # 重新签名
+          for file in release/bin/* release/lib/*.dylib; do
+            codesign --force --sign - "$file" 2>/dev/null || true
+          done
+
+          # 验证
+          echo "=== Binary files ==="
+          ls -la release/bin/
+          echo "=== Library files ==="
+          ls -la release/lib/
+          echo "=== Dependencies of idevice_id ==="
+          otool -L release/bin/idevice_id 2>/dev/null || true
+          echo "=== Architecture ==="
+          file release/bin/idevice_id 2>/dev/null || true
+
+          tar -C release -cf imobiledevice-macOS.tar bin lib
+
     - name: publish artifact
       uses: actions/upload-artifact@v4
       with:
-        name: libimobiledevice-latest_macOS
-        path: libimobiledevice.tar
+        name: imobiledevice-macOS-universal
+        path: imobiledevice-macOS.tar
+
   build-windows:
     runs-on: windows-latest
     defaults:
@@ -185,8 +174,7 @@ jobs:
       fail-fast: false
       matrix:
         include: [
-          { msystem: MINGW64, arch: x86_64 },
-          { msystem: MINGW32, arch: i686   }
+          { msystem: MINGW64, arch: x86_64 }
         ]
     steps:
     - uses: msys2/setup-msys2@v2
@@ -204,12 +192,14 @@ jobs:
           libtool
           autoconf
           automake-wrapper
+
     - name: prepare environment
       run: |
           dest=`echo ${{ matrix.msystem }} |tr [:upper:] [:lower:]`
           echo "dest=$dest" >> $GITHUB_ENV
           echo "target_triplet=`gcc -dumpmachine`" >> $GITHUB_ENV
           git config --global core.autocrlf false
+
     - name: fetch libplist
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -217,6 +207,7 @@ jobs:
         workflow: build.yml
         name: libplist-latest_${{ matrix.arch }}-${{ env.dest }}
         repo: libimobiledevice/libplist
+
     - name: fetch libusbmuxd
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -224,6 +215,7 @@ jobs:
         workflow: build.yml
         name: libusbmuxd-latest_${{ matrix.arch }}-${{ env.dest }}
         repo: libimobiledevice/libusbmuxd
+
     - name: fetch libimobiledevice-glue
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -231,6 +223,7 @@ jobs:
         workflow: build.yml
         name: libimobiledevice-glue-latest_${{ matrix.arch }}-${{ env.dest }}
         repo: libimobiledevice/libimobiledevice-glue
+
     - name: fetch libtatsu
       uses: dawidd6/action-download-artifact@v6
       with:
@@ -238,6 +231,7 @@ jobs:
         workflow: build.yml
         name: libtatsu-latest_${{ matrix.arch }}-${{ env.dest }}
         repo: libimobiledevice/libtatsu
+
     - name: install external dependencies
       run: |
           mkdir extract
@@ -245,20 +239,51 @@ jobs:
             tar -C extract -xvf $I
           done
           cp -r extract/* /
+
     - uses: actions/checkout@v4
+
     - name: autogen
-      run: ./autogen.sh CC=gcc CXX=g++ --enable-debug
+      run: ./autogen.sh CC=gcc CXX=g++ --enable-debug --without-cython
+
     - name: make
       run: make
+
     - name: make install
       run: make install
-    - name: prepare artifact
+
+    - name: collect binaries and dependencies
       run: |
-          mkdir -p dest
-          DESTDIR=`pwd`/dest make install
-          tar -C dest -cf libimobiledevice.tar ${{ env.dest }}
+          mkdir -p release
+
+          # 复制可执行文件
+          cp /${{ env.dest }}/bin/idevice*.exe release/ 2>/dev/null || true
+
+          # 收集所有依赖的 DLL
+          collect_dlls() {
+            local file="$1"
+            ldd "$file" 2>/dev/null | grep "/${{ env.dest }}/" | awk '{print $3}' | while read dll; do
+              dll_name=$(basename "$dll")
+              if [ ! -f "release/$dll_name" ]; then
+                cp "$dll" "release/"
+                echo "Collected: $dll_name"
+                collect_dlls "release/$dll_name"
+              fi
+            done
+          }
+
+          for exe in release/*.exe; do
+            collect_dlls "$exe"
+          done
+
+          echo "=== Files ==="
+          ls -la release/
+          echo "=== Dependencies of idevice_id.exe ==="
+          ldd release/idevice_id.exe 2>/dev/null || true
+
+          tar -C release -cf imobiledevice-windows.tar .
+
     - name: publish artifact
       uses: actions/upload-artifact@v4
       with:
-        name: libimobiledevice-latest_${{ matrix.arch }}-${{ env.dest }}
-        path: libimobiledevice.tar
+        name: imobiledevice-windows-${{ matrix.arch }}
+        path: imobiledevice-windows.tar
