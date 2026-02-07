@@ -7,125 +7,166 @@ jobs:
   build-macOS:
     runs-on: macOS-latest
     steps:
-    - name: install build tools
+    - name: install dependencies
       run: |
-          brew install libtool autoconf automake pkgconfig openssl
+          brew install libtool autoconf automake pkgconfig
+      shell: bash
 
-    - name: setup environment
+    - name: fetch libplist
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libplist-latest_macOS
+        repo: libimobiledevice/libplist
+
+    - name: fetch libusbmuxd
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libusbmuxd-latest_macOS
+        repo: libimobiledevice/libusbmuxd
+
+    - name: fetch libimobiledevice-glue
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libimobiledevice-glue-latest_macOS
+        repo: libimobiledevice/libimobiledevice-glue
+
+    - name: fetch libtatsu
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libtatsu-latest_macOS
+        repo: libimobiledevice/libtatsu
+
+    - name: install external dependencies
       run: |
-          echo "PREFIX=$HOME/static-deps" >> $GITHUB_ENV
-          OPENSSL_PREFIX=$(brew --prefix openssl)
-          echo "OPENSSL_PREFIX=$OPENSSL_PREFIX" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$HOME/static-deps/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
+          mkdir extract
+          for I in *.tar; do
+            tar -C extract -xvf $I
+          done
+          sudo cp -r extract/* /
+
+    - name: install additional requirements
+      run: |
+          mkdir -p lib
+          curl -o lib/libcrypto.35.tbd -Ls \
+              https://gist.github.com/nikias/94c99fd145a75a5104415e5117b0cafa/raw/5209dfbff5a871a14272afe4794e76eb4cf6f062/libcrypto.35.tbd
+          curl -o lib/libssl.35.tbd -Ls \
+              https://gist.github.com/nikias/94c99fd145a75a5104415e5117b0cafa/raw/5209dfbff5a871a14272afe4794e76eb4cf6f062/libssl.35.tbd
+          echo "LIBSSL=`pwd`/lib/libssl.35.tbd" >> $GITHUB_ENV
+          echo "LIBCRYPTO=`pwd`/lib/libcrypto.35.tbd" >> $GITHUB_ENV
+          LIBRESSL_VER=2.2.7
+          echo "LIBRESSL_VER=$LIBRESSL_VER" >> $GITHUB_ENV
+          FILENAME="libressl-$LIBRESSL_VER.tar.gz"
+          curl -o $FILENAME -Ls "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/$FILENAME"
+          mkdir -p deps
+          tar -C deps -xzf $FILENAME
+          echo "DEPSDIR=`pwd`/deps" >> $GITHUB_ENV
+
+    - uses: actions/checkout@v4
+
+    - name: autogen
+      run: |
           SDKDIR=`xcrun --sdk macosx --show-sdk-path`
-          echo "SDKDIR=$SDKDIR" >> $GITHUB_ENV
-          USEARCHS=""
-          for ARCH in arm64 x86_64; do
-            if echo "int main(int argc, char **argv) { return 0; }" | clang -arch $ARCH -o /dev/null -isysroot $SDKDIR -x c - 2>/dev/null; then
+          TESTARCHS="arm64 x86_64"
+          USEARCHS=
+          for ARCH in $TESTARCHS; do
+            if echo "int main(int argc, char **argv) { return 0; }" |clang -arch $ARCH -o /dev/null -isysroot $SDKDIR -x c - 2>/dev/null; then
               USEARCHS="$USEARCHS -arch $ARCH"
             fi
           done
-          echo "USEARCHS=$USEARCHS" >> $GITHUB_ENV
-          echo "CFLAGS=$USEARCHS -isysroot $SDKDIR -I$OPENSSL_PREFIX/include" >> $GITHUB_ENV
-          echo "LDFLAGS=$USEARCHS -isysroot $SDKDIR -L$OPENSSL_PREFIX/lib" >> $GITHUB_ENV
+          export CFLAGS="$USEARCHS -isysroot $SDKDIR"
+          echo "Using CFLAGS: $CFLAGS"
+          ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+              --without-cython \
+              --enable-debug \
+              openssl_CFLAGS="-I${{ env.DEPSDIR }}/libressl-${{ env.LIBRESSL_VER }}/include" \
+              openssl_LIBS="-Xlinker ${{ env.LIBSSL }} -Xlinker ${{ env.LIBCRYPTO }}"
 
-    - name: build libplist
-      run: |
-          git clone https://github.com/libimobiledevice/libplist.git
-          cd libplist
-          ./autogen.sh --enable-static --disable-shared --without-cython \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
+    - name: make
+      run: make
 
-    - name: build libimobiledevice-glue
-      run: |
-          git clone https://github.com/libimobiledevice/libimobiledevice-glue.git
-          cd libimobiledevice-glue
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
+    - name: make install
+      run: sudo make install
 
-    - name: build libusbmuxd
+    - name: collect and fix binaries
       run: |
-          git clone https://github.com/libimobiledevice/libusbmuxd.git
-          cd libusbmuxd
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
+          mkdir -p release/bin release/lib
 
-    - name: build libtatsu
-      run: |
-          git clone https://github.com/libimobiledevice/libtatsu.git
-          cd libtatsu
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
-
-    - name: build libimobiledevice
-      run: |
-          git clone https://github.com/libimobiledevice/libimobiledevice.git
-          cd libimobiledevice
-          ./autogen.sh --enable-static --disable-shared --without-cython \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
-
-    - name: build ideviceinstaller
-      run: |
-          git clone https://github.com/libimobiledevice/ideviceinstaller.git
-          cd ideviceinstaller
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
-
-    - name: verify binaries
-      run: |
-          echo "=== 文件列表 ==="
-          ls -la ${{ env.PREFIX }}/bin/idevice*
-          echo ""
-          echo "=== 架构信息 ==="
-          file ${{ env.PREFIX }}/bin/idevice_id
-          echo ""
-          echo "=== 动态库依赖 ==="
-          for bin in ${{ env.PREFIX }}/bin/idevice*; do
-            echo "--- $(basename $bin) ---"
-            otool -L "$bin" | grep -v "$(basename $bin)"
+          # 复制可执行文件
+          for f in /usr/local/bin/idevice*; do
+            [ -f "$f" ] && cp "$f" release/bin/
           done
 
-    - name: prepare artifact
-      run: |
-          mkdir -p release
-          cp ${{ env.PREFIX }}/bin/idevice* release/
-          rm -f release/*.la 2>/dev/null || true
-          ls -la release/
+          # 递归收集所有依赖的 dylib
+          collect_deps() {
+            local file="$1"
+            otool -L "$file" 2>/dev/null | awk '{print $1}' | while read dep; do
+              if [[ "$dep" == /usr/local/lib/* ]]; then
+                local name=$(basename "$dep")
+                if [ -f "$dep" ] && [ ! -f "release/lib/$name" ]; then
+                  cp "$dep" "release/lib/"
+                  echo "Collected: $name"
+                  collect_deps "release/lib/$name"
+                fi
+              fi
+            done
+          }
+
+          for bin in release/bin/*; do
+            collect_deps "$bin"
+          done
+          for lib in release/lib/*.dylib; do
+            collect_deps "$lib"
+          done
+
+          # 修复 bin 中的路径
+          for bin in release/bin/*; do
+            otool -L "$bin" 2>/dev/null | awk '{print $1}' | while read dep; do
+              if [[ "$dep" == /usr/local/lib/* ]]; then
+                name=$(basename "$dep")
+                install_name_tool -change "$dep" "@executable_path/../lib/$name" "$bin"
+              fi
+            done
+          done
+
+          # 修复 lib 中的相互引用
+          for lib in release/lib/*.dylib; do
+            lib_name=$(basename "$lib")
+            install_name_tool -id "@loader_path/$lib_name" "$lib" 2>/dev/null || true
+            otool -L "$lib" 2>/dev/null | awk '{print $1}' | while read dep; do
+              if [[ "$dep" == /usr/local/lib/* ]]; then
+                name=$(basename "$dep")
+                install_name_tool -change "$dep" "@loader_path/$name" "$lib"
+              fi
+            done
+          done
+
+          # 重新签名
+          for file in release/bin/* release/lib/*.dylib; do
+            codesign --force --sign - "$file" 2>/dev/null || true
+          done
+
+          # 验证
+          echo "=== bin ==="
+          ls -la release/bin/
+          echo "=== lib ==="
+          ls -la release/lib/
+          echo "=== idevice_id 依赖 ==="
+          otool -L release/bin/idevice_id 2>/dev/null || true
+          echo "=== 架构 ==="
+          file release/bin/idevice_id 2>/dev/null || true
 
     - name: publish artifact
       uses: actions/upload-artifact@v4
       with:
-        name: imobiledevice-macOS-universal
+        name: imobiledevice-macOS
         path: release/
 
   build-windows:
@@ -133,107 +174,115 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [
+          { msystem: MINGW64, arch: x86_64 }
+        ]
     steps:
     - uses: msys2/setup-msys2@v2
       with:
-        msystem: MINGW64
+        msystem: ${{ matrix.msystem }}
         release: false
         update: false
         install: >-
           base-devel
           git
-          mingw-w64-x86_64-gcc
-          mingw-w64-x86_64-pkg-config
-          mingw-w64-x86_64-openssl
+          mingw-w64-${{ matrix.arch }}-gcc
+          mingw-w64-${{ matrix.arch }}-pkg-config
+          mingw-w64-${{ matrix.arch }}-openssl
           make
           libtool
           autoconf
           automake-wrapper
 
-    - name: setup environment
+    - name: prepare environment
       run: |
-          echo "PREFIX=$HOME/static-deps" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$HOME/static-deps/lib/pkgconfig" >> $GITHUB_ENV
+          dest=`echo ${{ matrix.msystem }} |tr [:upper:] [:lower:]`
+          echo "dest=$dest" >> $GITHUB_ENV
+          echo "target_triplet=`gcc -dumpmachine`" >> $GITHUB_ENV
           git config --global core.autocrlf false
 
-    - name: build libplist
-      run: |
-          git clone https://github.com/libimobiledevice/libplist.git
-          cd libplist
-          ./autogen.sh --enable-static --disable-shared --without-cython \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }}
-          make -j$(nproc)
-          make install
+    - name: fetch libplist
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libplist-latest_${{ matrix.arch }}-${{ env.dest }}
+        repo: libimobiledevice/libplist
 
-    - name: build libimobiledevice-glue
-      run: |
-          git clone https://github.com/libimobiledevice/libimobiledevice-glue.git
-          cd libimobiledevice-glue
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }}
-          make -j$(nproc)
-          make install
+    - name: fetch libusbmuxd
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libusbmuxd-latest_${{ matrix.arch }}-${{ env.dest }}
+        repo: libimobiledevice/libusbmuxd
 
-    - name: build libusbmuxd
-      run: |
-          git clone https://github.com/libimobiledevice/libusbmuxd.git
-          cd libusbmuxd
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }}
-          make -j$(nproc)
-          make install
+    - name: fetch libimobiledevice-glue
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libimobiledevice-glue-latest_${{ matrix.arch }}-${{ env.dest }}
+        repo: libimobiledevice/libimobiledevice-glue
 
-    - name: build libtatsu
-      run: |
-          git clone https://github.com/libimobiledevice/libtatsu.git
-          cd libtatsu
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }}
-          make -j$(nproc)
-          make install
+    - name: fetch libtatsu
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: build.yml
+        name: libtatsu-latest_${{ matrix.arch }}-${{ env.dest }}
+        repo: libimobiledevice/libtatsu
 
-    - name: build libimobiledevice
+    - name: install external dependencies
       run: |
-          git clone https://github.com/libimobiledevice/libimobiledevice.git
-          cd libimobiledevice
-          ./autogen.sh --enable-static --disable-shared --without-cython \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            LDFLAGS="-static"
-          make -j$(nproc)
-          make install
-
-    - name: build ideviceinstaller
-      run: |
-          git clone https://github.com/libimobiledevice/ideviceinstaller.git
-          cd ideviceinstaller
-          ./autogen.sh --enable-static --disable-shared \
-            --prefix=${{ env.PREFIX }} \
-            PKG_CONFIG_PATH=${{ env.PKG_CONFIG_PATH }} \
-            LDFLAGS="-static"
-          make -j$(nproc)
-          make install
-
-    - name: verify binaries
-      run: |
-          echo "=== 文件列表 ==="
-          ls -la ${{ env.PREFIX }}/bin/idevice*
-          echo ""
-          echo "=== 依赖检查 ==="
-          for exe in ${{ env.PREFIX }}/bin/idevice*.exe; do
-            echo "--- $(basename $exe) ---"
-            ldd "$exe" 2>/dev/null || true
+          mkdir extract
+          for I in *.tar; do
+            tar -C extract -xvf $I
           done
+          cp -r extract/* /
 
-    - name: prepare artifact
+    - uses: actions/checkout@v4
+
+    - name: autogen
+      run: ./autogen.sh CC=gcc CXX=g++ --enable-debug --without-cython
+
+    - name: make
+      run: make
+
+    - name: make install
+      run: make install
+
+    - name: collect binaries and dependencies
       run: |
           mkdir -p release
-          cp ${{ env.PREFIX }}/bin/idevice*.exe release/
+
+          # 复制可执行文件
+          cp /${{ env.dest }}/bin/idevice*.exe release/ 2>/dev/null || true
+
+          # 递归收集依赖的 DLL
+          collect_dlls() {
+            local file="$1"
+            ldd "$file" 2>/dev/null | grep "/${{ env.dest }}/" | awk '{print $3}' | while read dll; do
+              local dll_name=$(basename "$dll")
+              if [ ! -f "release/$dll_name" ]; then
+                cp "$dll" "release/"
+                echo "Collected: $dll_name"
+                collect_dlls "release/$dll_name"
+              fi
+            done
+          }
+
+          for exe in release/*.exe; do
+            collect_dlls "$exe"
+          done
+
+          echo "=== 文件列表 ==="
           ls -la release/
+          echo "=== idevice_id.exe 依赖 ==="
+          ldd release/idevice_id.exe 2>/dev/null || true
 
     - name: publish artifact
       uses: actions/upload-artifact@v4
