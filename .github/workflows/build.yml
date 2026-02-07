@@ -9,7 +9,11 @@ jobs:
     steps:
     - name: install dependencies
       run: |
-          brew install libtool autoconf automake pkgconfig
+          if test -x "`which port`"; then
+            sudo port install libtool autoconf automake pkgconfig
+          else
+            brew install libtool autoconf automake pkgconfig
+          fi
       shell: bash
 
     - name: fetch libplist
@@ -51,6 +55,10 @@ jobs:
             tar -C extract -xvf $I
           done
           sudo cp -r extract/* /
+          
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: install additional requirements
       run: |
@@ -69,8 +77,6 @@ jobs:
           tar -C deps -xzf $FILENAME
           echo "DEPSDIR=`pwd`/deps" >> $GITHUB_ENV
 
-    - uses: actions/checkout@v4
-
     - name: autogen
       run: |
           SDKDIR=`xcrun --sdk macosx --show-sdk-path`
@@ -83,9 +89,7 @@ jobs:
           done
           export CFLAGS="$USEARCHS -isysroot $SDKDIR"
           echo "Using CFLAGS: $CFLAGS"
-          ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-              --without-cython \
-              --enable-debug \
+          ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig --enable-debug \
               openssl_CFLAGS="-I${{ env.DEPSDIR }}/libressl-${{ env.LIBRESSL_VER }}/include" \
               openssl_LIBS="-Xlinker ${{ env.LIBSSL }} -Xlinker ${{ env.LIBCRYPTO }}"
 
@@ -99,12 +103,10 @@ jobs:
       run: |
           mkdir -p release/bin release/lib
 
-          # 复制可执行文件
           for f in /usr/local/bin/idevice*; do
             [ -f "$f" ] && cp "$f" release/bin/
           done
 
-          # 递归收集所有依赖的 dylib
           collect_deps() {
             local file="$1"
             otool -L "$file" 2>/dev/null | awk '{print $1}' | while read dep; do
@@ -126,7 +128,6 @@ jobs:
             collect_deps "$lib"
           done
 
-          # 修复 bin 中的路径
           for bin in release/bin/*; do
             otool -L "$bin" 2>/dev/null | awk '{print $1}' | while read dep; do
               if [[ "$dep" == /usr/local/lib/* ]]; then
@@ -136,7 +137,6 @@ jobs:
             done
           done
 
-          # 修复 lib 中的相互引用
           for lib in release/lib/*.dylib; do
             lib_name=$(basename "$lib")
             install_name_tool -id "@loader_path/$lib_name" "$lib" 2>/dev/null || true
@@ -148,19 +148,17 @@ jobs:
             done
           done
 
-          # 重新签名
           for file in release/bin/* release/lib/*.dylib; do
             codesign --force --sign - "$file" 2>/dev/null || true
           done
 
-          # 验证
           echo "=== bin ==="
           ls -la release/bin/
           echo "=== lib ==="
           ls -la release/lib/
-          echo "=== idevice_id 依赖 ==="
+          echo "=== idevice_id deps ==="
           otool -L release/bin/idevice_id 2>/dev/null || true
-          echo "=== 架构 ==="
+          echo "=== arch ==="
           file release/bin/idevice_id 2>/dev/null || true
 
     - name: publish artifact
@@ -174,24 +172,18 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: [
-          { msystem: MINGW64, arch: x86_64 }
-        ]
     steps:
     - uses: msys2/setup-msys2@v2
       with:
-        msystem: ${{ matrix.msystem }}
+        msystem: MINGW64
         release: false
         update: false
         install: >-
           base-devel
           git
-          mingw-w64-${{ matrix.arch }}-gcc
-          mingw-w64-${{ matrix.arch }}-pkg-config
-          mingw-w64-${{ matrix.arch }}-openssl
+          mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-pkg-config
+          mingw-w64-x86_64-openssl
           make
           libtool
           autoconf
@@ -199,7 +191,7 @@ jobs:
 
     - name: prepare environment
       run: |
-          dest=`echo ${{ matrix.msystem }} |tr [:upper:] [:lower:]`
+          dest=`echo MINGW64 |tr [:upper:] [:lower:]`
           echo "dest=$dest" >> $GITHUB_ENV
           echo "target_triplet=`gcc -dumpmachine`" >> $GITHUB_ENV
           git config --global core.autocrlf false
@@ -209,7 +201,7 @@ jobs:
       with:
         github_token: ${{secrets.GITHUB_TOKEN}}
         workflow: build.yml
-        name: libplist-latest_${{ matrix.arch }}-${{ env.dest }}
+        name: libplist-latest_x86_64-${{ env.dest }}
         repo: libimobiledevice/libplist
 
     - name: fetch libusbmuxd
@@ -217,7 +209,7 @@ jobs:
       with:
         github_token: ${{secrets.GITHUB_TOKEN}}
         workflow: build.yml
-        name: libusbmuxd-latest_${{ matrix.arch }}-${{ env.dest }}
+        name: libusbmuxd-latest_x86_64-${{ env.dest }}
         repo: libimobiledevice/libusbmuxd
 
     - name: fetch libimobiledevice-glue
@@ -225,7 +217,7 @@ jobs:
       with:
         github_token: ${{secrets.GITHUB_TOKEN}}
         workflow: build.yml
-        name: libimobiledevice-glue-latest_${{ matrix.arch }}-${{ env.dest }}
+        name: libimobiledevice-glue-latest_x86_64-${{ env.dest }}
         repo: libimobiledevice/libimobiledevice-glue
 
     - name: fetch libtatsu
@@ -233,7 +225,7 @@ jobs:
       with:
         github_token: ${{secrets.GITHUB_TOKEN}}
         workflow: build.yml
-        name: libtatsu-latest_${{ matrix.arch }}-${{ env.dest }}
+        name: libtatsu-latest_x86_64-${{ env.dest }}
         repo: libimobiledevice/libtatsu
 
     - name: install external dependencies
@@ -245,9 +237,11 @@ jobs:
           cp -r extract/* /
 
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: autogen
-      run: ./autogen.sh CC=gcc CXX=g++ --enable-debug --without-cython
+      run: ./autogen.sh CC=gcc CXX=g++ --enable-debug
 
     - name: make
       run: make
@@ -259,10 +253,8 @@ jobs:
       run: |
           mkdir -p release
 
-          # 复制可执行文件
           cp /${{ env.dest }}/bin/idevice*.exe release/ 2>/dev/null || true
 
-          # 递归收集依赖的 DLL
           collect_dlls() {
             local file="$1"
             ldd "$file" 2>/dev/null | grep "/${{ env.dest }}/" | awk '{print $3}' | while read dll; do
